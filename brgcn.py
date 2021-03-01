@@ -85,26 +85,15 @@ class BRGCNConv(MessagePassing):
 
         return final_embeddings
 
-    # def aggregate_relation_attention(self, q, k, v, x_i, edge_index_r):
-    #     out = x_i.new_zero(x_i.size(0), self.out_channels)
-    #     for r in range(self.num_relations):
-    #         # importance of relation r
-    #         psi_r = (q[r].unsqueeze(0) * k).sum(-1).sum(0)
-    #         # attented relation-specific embedding (relation level attention weight)
-    #         delta_r = psi_r.view(1, -1, 1)*v.sum(0) + x_i.matmul(self.W_self)
-    #         delta_r = softmax(delta_r, edge_index_r)
-    #         out.add_(delta_r)
-    #     return out
-
-    def message(self, x_i, x_j, edge_index_i, size_i, relation):
+    def message(self, x_i, x_j, edge_index_i, relation):
         x_i = x_i.view(-1, self.out_channels)
-        alpha = (self.node_att[relation, :].view(1, -1) * torch.cat([x_i, x_j], dim=-1)).sum(dim=-1, keepdim=True)
+        alpha = (self.node_att[relation, :].view(1, -1) * torch.cat([x_i, x_j], dim=-1)).sum(dim=-1)
         alpha = F.leaky_relu(alpha, self.neg_slope)
         alpha = softmax(alpha, edge_index_i)
         # TODO: Possible drop out step at here
         if self.training and self.dropout>0:
             alpha = F.dropout(alpha, p=self.dropout, training=True)
-        return alpha * x_j
+        return alpha.view(-1,1) * x_j
 
 
 
@@ -188,6 +177,16 @@ class BRGCN(torch.nn.Module):
             x = conv((x, x_target), edge_index, edge_type[e_id], node_type)
             if i != self.num_layers - 1:
                 x = F.relu(x)
-                x = F.dropout(x, p=0.5, training=self.training)
+                x = F.dropout(x, p=self.dropout, training=self.training)
 
         return x.log_softmax(dim=-1)
+
+    def fullBatch_inference(self, x_dict, edge_index, edge_type, node_type, local_node_idx):
+        x = self.group_input(x_dict, node_type, local_node_idx)
+        node_type = node_type[edge_index[1].unique()]
+        for i, conv in enumerate(self.convs):
+            x = conv(x, edge_index, edge_type, node_type)
+            if i!=self.num_layers - 1:
+                x = F.relu(x)
+                x = F.dropout(x, p=self.dropout, training=self.training)
+        return x

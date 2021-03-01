@@ -1,3 +1,5 @@
+import argparse
+
 import torch
 import torch.nn.functional as F
 from torch_geometric.data import NeighborSampler
@@ -6,14 +8,27 @@ from torch_geometric.utils.hetero import group_hetero_graph
 from ogb.nodeproppred import PygNodePropPredDataset, Evaluator
 from tqdm import tqdm
 from torch_geometric.datasets import Entities
+from util import process_mag
 
 from brgcn import BRGCN
 
 from logger import Logger
+parser = argparse.ArgumentParser(description='BRGCN on OGBN-MAG')
+parser.add_argument('--device', type=str, default='cuda')
+parser.add_argument('--hidden_channels', type=int, default=16)
+parser.add_argument('--num_layers', type=int, default=2)
+parser.add_argument('--dropout', type=float, default=0.2)
+parser.add_argument('--neg_slope', type=float, default=0.2)
+parser.add_argument('--heads', type=int, default=1)
+parser.add_argument('--lr', type=float, default=0.01)
+parser.add_argument('--epochs', type=int, default=10)
+parser.add_argument('--runs', type=int, default=1)
+args = parser.parse_args()
+print(args)
 
 dataset = PygNodePropPredDataset(name='ogbn-mag')
 data = dataset[0]
-split_idx = dataset.get_idx_split()
+idx_split = dataset.get_idx_split()
 evaluator = Evaluator(name='ogbn-mag')
 # logger = Logger(args.runs, args)
 
@@ -21,7 +36,8 @@ print(data)
 
 edge_index_dict = data.edge_index_dict
 
-# We need to add reverse edges to the heterogeneous graph.
+# edge_index, edge_type, node_type, global2local, local2global, node_relation2int = process_mag(data)
+
 r, c = edge_index_dict[('author', 'affiliated_with', 'institution')]
 edge_index_dict[('institution', 'to', 'author')] = torch.stack([c, r])
 
@@ -35,16 +51,6 @@ edge_index_dict[('field_of_study', 'to', 'paper')] = torch.stack([c, r])
 edge_index = to_undirected(edge_index_dict[('paper', 'cites', 'paper')])
 edge_index_dict[('paper', 'cites', 'paper')] = edge_index
 
-# We convert the individual graphs into a single big one, so that sampling
-# neighbors does not need to care about different edge types.
-# This will return the following:
-# * `edge_index`: The new global edge connectivity.
-# * `edge_type`: The edge type for each edge.
-# * `node_type`: The node type for each node.
-# * `local_node_idx`: The original index for each node.
-# * `local2global`: A dictionary mapping original (local) node indices of
-#    type `key` to global ones.
-# `key2int`: A dictionary that maps original keys to their new canonical type.
 out = group_hetero_graph(data.edge_index_dict, data.num_nodes_dict)
 edge_index, edge_type, node_type, local_node_idx, local2global, key2int = out
 
@@ -60,16 +66,19 @@ for key, N in data.num_nodes_dict.items():
 # Next, we create a train sampler that only iterates over the respective
 # paper training nodes.
 paper_idx = local2global['paper']
-paper_train_idx = paper_idx[split_idx['train']['paper']]
+paper_train_idx = paper_idx[idx_split['train']['paper']]
+paper_valid_idx = paper_idx[idx_split['valid']['paper']]
+paper_test_idx = paper_idx[idx_split['test']['paper']]
 
 train_loader = NeighborSampler(edge_index, node_idx=paper_train_idx,
                                sizes=[20, 10], batch_size=1024, shuffle=True) #num_workers=12)
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
 
-# in_channels, hidden_channels, out_channels, num_layers, dropout, neg_slope, heads,
-#                  num_relations):
-brgcn = BRGCN(in_channels=128, hidden_channels=16, out_channels=dataset.num_classes, num_layers=2, dropout=0.2,
-              neg_slope=0.2, heads=1, num_relations=len(edge_index_dict.keys()), num_nodes_dict=num_nodes_dict,
+
+
+brgcn = BRGCN(in_channels=128, hidden_channels=args.hidden_channels, out_channels=dataset.num_classes,
+              num_layers=args.num_layers, dropout=args.dropout, neg_slope=args.neg_slope, heads=args.heads,
+              num_relations=len(data.edge_index_dict.keys()), num_nodes_dict=num_nodes_dict,
               x_types=list(x_dict.keys())).to(device)
 
 # Create global label vector.
@@ -83,31 +92,60 @@ node_type = node_type.to(device)
 local_node_idx = local_node_idx.to(device)
 y_global = y_global.to(device)
 
-epochs = 10
-optimizer = torch.optim.Adam(brgcn.parameters(), lr=0.01)
-# brgcn.reset_parameteres()
-for epoch in range(1, epochs+1):
-    pbar = tqdm(total=paper_train_idx.size(0))
-    pbar.set_description(f'Epoch {epoch}')
-
+def train(epoch):
     brgcn.train()
+    progress_bar = tqdm(total=paper_train_idx.size(0))
+    progress_bar.set_description(f'Epoch {epoch}')
+
     total_loss = 0
-    for batch_size, n_id, adjs, in train_loader:
+    for batch_size, n_id, adjs in train_loader:
         optimizer.zero_grad()
 
         n_id = n_id.to(device)
         adjs = [adj.to(device) for adj in adjs]
-
         out = brgcn(n_id, x_dict, adjs, edge_type, node_type, local_node_idx)
         y = y_global[n_id][:batch_size].squeeze()
         loss = F.nll_loss(out, y)
         loss.backward()
         optimizer.step()
-
         total_loss += loss * batch_size
-        pbar.update(batch_size)
-    pbar.close()
-    epoch_loss = total_loss/paper_train_idx.size(0)
-    print(f"Training epoch {epoch}/{epochs},  loss: {epoch_loss: .4f}")
+        progress_bar.update(batch_size)
+    progress_bar.close()
+    loss = total_loss/paper_train_idx.size(0)
+    return loss
+
+@torch.no_grad()
+def test_fullbatch():
+    brgcn.eval()
+
+    out = brgcn.fullBatch_inference(x_dict, edge_index, edge_type, node_type, local_node_idx)
+    y_pred = out[local2global['paper']].argmax(dim=-1, keepdim=True).cpu()
+    y_true = data.y_dict['paper']
+
+    train_acc = evaluator.eval({
+        'y_true': y_true[paper_train_idx],
+        'y_pred': y_pred[paper_train_idx],
+    })['acc']
+    valid_acc = evaluator.eval({
+        'y_true': y_true[paper_valid_idx],
+        'y_pred': y_pred[paper_valid_idx],
+    })['acc']
+    test_acc = evaluator.eval({
+        'y_true': y_true[paper_test_idx],
+        'y_pred': y_pred[paper_test_idx],
+    })['acc']
+
+    return train_acc, valid_acc, test_acc
 
 
+for run in range(args.runs):
+    optimizer = torch.optim.Adam(brgcn.parameters(), lr=args.lr)
+    brgcn.reset_parameters()
+    for epoch in range(1, args.epochs+1):
+        train_loss = train(epoch)
+        print(f"Run {run}, Training epoch {epoch},  loss: {train_loss: .4f}")
+        train_acc, valid_acc, test_acc = test_fullbatch()
+        print(f"Testing performance, "
+              f"train: {100*train_acc: .2f}%,"
+              f"valid: {100*valid_acc: .2f}%,"
+              f"test: {100*test_acc: .2f}%")
