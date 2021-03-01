@@ -124,7 +124,10 @@ class RGCNConv(MessagePassing):
 
     # (x, x_target), edge_index, edge_type[e_id], node_type
     def forward(self, x, edge_index, edge_type, target_node_type):
-        x_src, x_target = x
+        if isinstance(x, tuple):
+            x_src, x_target = x
+        else:
+            x_src, x_target = x, x
 
         out = x_target.new_zeros(x_target.size(0), self.out_channels)
 
@@ -263,6 +266,16 @@ class RGCN(torch.nn.Module):
 
         return x_dict
 
+    def fullBatch_inference(self, x_dict, edge_index, edge_type, node_type, local_node_idx):
+        x = self.group_input(x_dict, node_type, local_node_idx)
+        node_type = node_type[edge_index[1].unique()]
+        for i, conv in enumerate(self.convs):
+            x = conv(x, edge_index, edge_type, node_type)
+            if i!=self.num_layers - 1:
+                x = F.relu(x)
+                x = F.dropout(x, p=self.dropout, training=self.training)
+        return x
+
 
 device = f'cuda:{args.device}' if torch.cuda.is_available() else 'cpu'
 
@@ -281,6 +294,7 @@ edge_type = edge_type.to(device)
 node_type = node_type.to(device)
 local_node_idx = local_node_idx.to(device)
 y_global = y_global.to(device)
+edge_index = edge_index.to(device)
 
 
 def train(epoch):
@@ -336,7 +350,30 @@ def test():
     return train_acc, valid_acc, test_acc
 
 
+@torch.no_grad()
+def test_conv():
+    model.eval()
 
+    out = model.fullBatch_inference(x_dict, edge_index, edge_type, node_type, local_node_idx)
+    y_pred = out[local2global['paper']].argmax(dim=-1, keepdim=True).cpu()
+    y_true = data.y_dict['paper']
+
+    train_acc = evaluator.eval({
+        'y_true': y_true[split_idx['train']['paper']],
+        'y_pred': y_pred[split_idx['train']['paper']],
+    })['acc']
+    valid_acc = evaluator.eval({
+        'y_true': y_true[split_idx['valid']['paper']],
+        'y_pred': y_pred[split_idx['valid']['paper']],
+    })['acc']
+    test_acc = evaluator.eval({
+        'y_true': y_true[split_idx['test']['paper']],
+        'y_pred': y_pred[split_idx['test']['paper']],
+    })['acc']
+
+    return train_acc, valid_acc, test_acc
+
+@torch.no_grad()
 def test_sample():
     model.eval()
     y_pred = data.y_dict['paper'].new_full((num_nodes_dict[key2int['paper']], 1), -1)
@@ -377,14 +414,16 @@ def test_sample():
 
 
 # test()  # Test if inference on GPU succeeds.
-test_sample()
+# test_sample()
+test_conv()
 for run in range(args.runs):
     model.reset_parameters()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     for epoch in range(1, 1 + args.epochs):
         loss = train(epoch)
         result = test()
-        result2 = test_sample()
+        # result2 = test_sample()
+        result2 = test_conv()
         logger.add_result(run, result)
         train_acc, valid_acc, test_acc = result
         print(f'Run: {run + 1:02d}, '
