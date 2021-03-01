@@ -21,8 +21,8 @@ parser.add_argument('--num_layers', type=int, default=2)
 parser.add_argument('--hidden_channels', type=int, default=64)
 parser.add_argument('--dropout', type=float, default=0.5)
 parser.add_argument('--lr', type=float, default=0.01)
-parser.add_argument('--epochs', type=int, default=3)
-parser.add_argument('--runs', type=int, default=10)
+parser.add_argument('--epochs', type=int, default=10)
+parser.add_argument('--runs', type=int, default=1)
 args = parser.parse_args()
 print(args)
 
@@ -80,10 +80,18 @@ for key, N in data.num_nodes_dict.items():
 # paper training nodes.
 paper_idx = local2global['paper']
 paper_train_idx = paper_idx[split_idx['train']['paper']]
+paper_valid_idx = paper_idx[split_idx['valid']['paper']]
+paper_test_idx = paper_idx[split_idx['test']['paper']]
 
 train_loader = NeighborSampler(edge_index, node_idx=paper_train_idx,
                                sizes=[20, 10], batch_size=1024, shuffle=True)#,
                                #num_workers=12)
+
+valid_loader = NeighborSampler(edge_index, node_idx=paper_valid_idx,
+                               sizes=[20, 10], batch_size=len(paper_valid_idx), shuffle=True)
+
+test_loader = NeighborSampler(edge_index, node_idx=paper_test_idx,
+                               sizes=[20, 10], batch_size=len(paper_test_idx), shuffle=True)
 
 
 class RGCNConv(MessagePassing):
@@ -328,13 +336,55 @@ def test():
     return train_acc, valid_acc, test_acc
 
 
-test()  # Test if inference on GPU succeeds.
+
+def test_sample():
+    model.eval()
+    y_pred = data.y_dict['paper'].new_full((num_nodes_dict[key2int['paper']], 1), -1)
+    # for batch_size, n_id, adjs in train_loader:
+    #     n_id = n_id.to(device)
+    #     adjs = [adj.to(device) for adj in adjs]
+    #     out = model(n_id, x_dict, adjs, edge_type, node_type, local_node_idx)
+    #     y_pred[local_node_idx[n_id[:batch_size]]] = out.argmax(dim=-1, keepdim=True).cpu()
+
+    for batch_size, n_id, adjs in valid_loader:
+        n_id = n_id.to(device)
+        adjs = [adj.to(device) for adj in adjs]
+        out = model(n_id, x_dict, adjs, edge_type, node_type, local_node_idx)
+        y_pred[local_node_idx[n_id[:batch_size]]] = out.argmax(dim=-1, keepdim=True).cpu()
+
+    for batch_size, n_id, adjs in test_loader:
+        n_id = n_id.to(device)
+        adjs = [adj.to(device) for adj in adjs]
+        out = model(n_id, x_dict, adjs, edge_type, node_type, local_node_idx)
+        y_pred[local_node_idx[n_id[:batch_size]]] = out.argmax(dim=-1, keepdim=True).cpu()
+
+    y_true = data.y_dict['paper']
+    train_acc = 0
+    # train_acc = evaluator.eval({
+    #     'y_true': y_true[split_idx['train']['paper']],
+    #     'y_pred': y_pred[split_idx['train']['paper']],
+    # })['acc']
+    valid_acc = evaluator.eval({
+        'y_true': y_true[split_idx['valid']['paper']],
+        'y_pred': y_pred[split_idx['valid']['paper']],
+    })['acc']
+    test_acc = evaluator.eval({
+        'y_true': y_true[split_idx['test']['paper']],
+        'y_pred': y_pred[split_idx['test']['paper']],
+    })['acc']
+
+    return train_acc, valid_acc, test_acc
+
+
+# test()  # Test if inference on GPU succeeds.
+test_sample()
 for run in range(args.runs):
     model.reset_parameters()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     for epoch in range(1, 1 + args.epochs):
         loss = train(epoch)
         result = test()
+        result2 = test_sample()
         logger.add_result(run, result)
         train_acc, valid_acc, test_acc = result
         print(f'Run: {run + 1:02d}, '
@@ -343,5 +393,9 @@ for run in range(args.runs):
               f'Train: {100 * train_acc:.2f}%, '
               f'Valid: {100 * valid_acc:.2f}%, '
               f'Test: {100 * test_acc:.2f}%')
+        print(f'Predict with random neighbor loader: '
+              f'Train: {100 * result2[0]:.2f}%, '
+              f'Valid: {100 * result2[1]:.2f}%, '
+              f'Test: {100 * result2[2]:.2f}%')
     logger.print_statistics(run)
 logger.print_statistics()
