@@ -48,7 +48,10 @@ class BRGCNConv(MessagePassing):
         :return:
         '''
         # TODO: note the x_neighbor also contains the target nodes
-        x_neighbor, x_target = x
+        if isinstance(x,(tuple, list)):
+            x_neighbor, x_target = x
+        else:
+            x_neighbor, x_target = x, x
 
         final_embeddings = x_target.new_zeros(x_target.size(0), self.out_channels)
 
