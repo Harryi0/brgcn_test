@@ -276,6 +276,36 @@ class RGCN(torch.nn.Module):
                 x = F.dropout(x, p=self.dropout, training=self.training)
         return x
 
+    def group_inference(self, x_dict, edge_index_dict, local2global, key2int):
+        device = list(x_dict.values())[0].device
+        x_dict = copy(x_dict)
+        for k, emb in self.emb_dict.items():
+            x_dict[int(k)] = emb
+        for i, conv in enumerate(self.convs):
+            out_dict = dict()
+            for n, x_target in x_dict.items():
+                edge_index_n = []
+                neighbor_nodes = []
+                edge_type_n = []
+                x = []
+                for k, e_i in edge_index_dict.items():
+                    if key2int[k[-1]] == n:
+                        edge_index_n.append(e_i)
+                        neighbor_nodes.append(local2global[k[0]])
+                        edge_type_n.append(e_i.new_full((e_i.size(1),), key2int[k]))
+                        x.append(x_dict[key2int[k[0]]])
+                edge_index_n = torch.cat(edge_index_n, dim=1)
+                node_type_n = edge_index_n.new_full((x_target.size(0),), n)
+                edge_type_n = torch.cat(edge_type_n, dim=0)
+                x = torch.cat([x_target]+x, dim=0)
+                x = conv((x, x_target), edge_index_n, edge_type_n, node_type_n)
+                if i != self.num_layers-1:
+                    x = F.relu(x)
+                    x = F.dropout(x, p=self.dropout, training=self.training)
+                out_dict[n] = x
+            x_dict = out_dict
+        return x_dict
+
 
 device = f'cuda:{args.device}' if torch.cuda.is_available() else 'cpu'
 
@@ -290,6 +320,7 @@ y_global[local2global['paper']] = data.y_dict['paper']
 
 # Move everything to the GPU.
 x_dict = {k: v.to(device) for k, v in x_dict.items()}
+local2global = {k: v.to(device) for k, v in local2global.items()}
 edge_type = edge_type.to(device)
 node_type = node_type.to(device)
 local_node_idx = local_node_idx.to(device)
@@ -349,6 +380,29 @@ def test():
 
     return train_acc, valid_acc, test_acc
 
+@torch.no_grad()
+def test_group():
+    model.eval()
+    out = model.group_inference(x_dict, edge_index_dict, local2global, key2int)
+    out = out[key2int['paper']]
+
+    y_pred = out.argmax(dim=-1, keepdim=True).cpu()
+    y_true = data.y_dict['paper']
+
+    train_acc = evaluator.eval({
+        'y_true': y_true[split_idx['train']['paper']],
+        'y_pred': y_pred[split_idx['train']['paper']],
+    })['acc']
+    valid_acc = evaluator.eval({
+        'y_true': y_true[split_idx['valid']['paper']],
+        'y_pred': y_pred[split_idx['valid']['paper']],
+    })['acc']
+    test_acc = evaluator.eval({
+        'y_true': y_true[split_idx['test']['paper']],
+        'y_pred': y_pred[split_idx['test']['paper']],
+    })['acc']
+
+    return train_acc, valid_acc, test_acc
 
 @torch.no_grad()
 def test_conv():
@@ -415,7 +469,8 @@ def test_sample():
 
 # test()  # Test if inference on GPU succeeds.
 # test_sample()
-test_conv()
+# test_conv()
+test_group()
 for run in range(args.runs):
     model.reset_parameters()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -423,7 +478,8 @@ for run in range(args.runs):
         loss = train(epoch)
         result = test()
         # result2 = test_sample()
-        result2 = test_conv()
+        # result2 = test_conv()
+        result2 = test_group()
         logger.add_result(run, result)
         train_acc, valid_acc, test_acc = result
         print(f'Run: {run + 1:02d}, '
