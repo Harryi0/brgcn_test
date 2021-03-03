@@ -1,3 +1,5 @@
+from copy import copy
+
 import torch
 import torch.nn.functional as F
 from torch.nn import Parameter, Linear, ModuleList, ParameterDict, init
@@ -193,3 +195,36 @@ class BRGCN(torch.nn.Module):
                 x = F.relu(x)
                 x = F.dropout(x, p=self.dropout, training=self.training)
         return x
+
+    def group_inference(self, x_dict, edge_index_dict, key2int):
+        x_dict = copy(x_dict)
+        for k, emb in self.emb_dict.items():
+            x_dict[int(k)] = emb
+        for i, conv in enumerate(self.convs):
+            out_dict = dict()
+            for n, x_target in x_dict.items():
+                edge_index_n = []
+                edge_type_n = []
+                node_type_nbr = []
+                x_nbr = []
+                for k, e_i in edge_index_dict.items():
+                    if key2int[k[-1]] == n:
+                        edge_index_n.append(e_i)
+                        edge_type_n.append(e_i.new_full((e_i.size(1),), key2int[k]))
+                        node_type_nbr.append(e_i.new_full((x_dict[key2int[k[0]]].size(0),), key2int[k[0]]))
+                        x_nbr.append(x_dict[key2int[k[0]]])
+                edge_index_n = torch.cat(edge_index_n, dim=1)
+                edge_type_n = torch.cat(edge_type_n, dim=0)
+                x = torch.cat([x_target]+x_nbr, dim=0)
+                node_type_target = edge_index_n.new_full((x_target.size(0),), n)
+                node_type_n = torch.cat([node_type_target]+node_type_nbr, dim=0)
+                x_out = conv((x, x_target), edge_index_n, edge_type_n, node_type_n)
+                if i != self.num_layers - 1:
+                    x_out = F.relu(x_out)
+                    x_out = F.dropout(x_out, p=self.dropout, training=self.training)
+                out_dict[n] = x_out
+            # if i != self.num_layers - 1:
+            #     for j in range(self.num_node_types):
+            #         F.relu_(out_dict[j])
+            x_dict = out_dict
+        return x_dict

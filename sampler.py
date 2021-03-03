@@ -285,19 +285,16 @@ class RGCN(torch.nn.Module):
             for n, x_target in x_dict.items():
                 edge_index_n = []
                 edge_type_n = []
-                node_type_nbr = []
                 x_nbr = []
                 for k, e_i in edge_index_dict.items():
                     if key2int[k[-1]] == n:
                         edge_index_n.append(e_i)
                         edge_type_n.append(e_i.new_full((e_i.size(1),), key2int[k]))
-                        node_type_nbr.append(e_i.new_full((x_dict[key2int[k[0]]].size(0),), key2int[k[0]]))
                         x_nbr.append(x_dict[key2int[k[0]]])
                 edge_index_n = torch.cat(edge_index_n, dim=1)
                 edge_type_n = torch.cat(edge_type_n, dim=0)
                 x = torch.cat([x_target]+x_nbr, dim=0)
-                node_type_target = edge_index_n.new_full((x_target.size(0),), n)
-                node_type_n = torch.cat([node_type_target]+node_type_nbr, dim=0)
+                node_type_n = edge_index_n.new_full((x_target.size(0),), n)
                 x_out = conv((x, x_target), edge_index_n, edge_type_n, node_type_n)
                 if i != self.num_layers - 1:
                     x_out = F.relu(x_out)

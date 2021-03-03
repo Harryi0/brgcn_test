@@ -72,6 +72,13 @@ paper_test_idx = paper_idx[idx_split['test']['paper']]
 
 train_loader = NeighborSampler(edge_index, node_idx=paper_train_idx,
                                sizes=[20, 10], batch_size=1024, shuffle=True) #num_workers=12)
+
+valid_loader = NeighborSampler(edge_index, node_idx=paper_valid_idx,
+                               sizes=[20, 10], batch_size=len(paper_valid_idx), shuffle=True) #num_workers=12)
+
+test_loader = NeighborSampler(edge_index, node_idx=paper_test_idx,
+                               sizes=[20, 10], batch_size=len(paper_test_idx), shuffle=True) #num_workers=12)
+
 device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
 
 
@@ -85,12 +92,14 @@ brgcn = BRGCN(in_channels=128, hidden_channels=args.hidden_channels, out_channel
 y_global = node_type.new_full((node_type.size(0), 1), -1)
 y_global[local2global['paper']] = data.y_dict['paper']
 
-# brgcn.reset_parameteres()
+# transfer the processed data to the device (GPU)
 x_dict = {k: v.to(device) for k, v in x_dict.items()}
+edge_index_dict = {k: v.to(device) for k, v in edge_index_dict.items()}
 edge_type = edge_type.to(device)
 node_type = node_type.to(device)
 local_node_idx = local_node_idx.to(device)
 y_global = y_global.to(device)
+edge_index = edge_index.to(device)
 
 def train(epoch):
     brgcn.train()
@@ -115,6 +124,68 @@ def train(epoch):
     return loss
 
 @torch.no_grad()
+def test_group():
+    brgcn.eval()
+    out = brgcn.group_inference(x_dict, edge_index_dict, key2int)
+    out = out[key2int['paper']]
+
+    y_pred = out.argmax(dim=-1, keepdim=True).cpu()
+    y_true = data.y_dict['paper']
+
+    train_acc = evaluator.eval({
+        'y_true': y_true[paper_train_idx],
+        'y_pred': y_pred[paper_train_idx],
+    })['acc']
+    valid_acc = evaluator.eval({
+        'y_true': y_true[paper_valid_idx],
+        'y_pred': y_pred[paper_valid_idx],
+    })['acc']
+    test_acc = evaluator.eval({
+        'y_true': y_true[paper_test_idx],
+        'y_pred': y_pred[paper_test_idx],
+    })['acc']
+
+    return train_acc, valid_acc, test_acc
+
+@torch.no_grad()
+def test_sample():
+    brgcn.eval()
+    y_pred = data.y_dict['paper'].new_full((num_nodes_dict[key2int['paper']], 1), -1)
+    for batch_size, n_id, adjs in train_loader:
+        n_id = n_id.to(device)
+        adjs = [adj.to(device) for adj in adjs]
+        out = brgcn(n_id, x_dict, adjs, edge_type, node_type, local_node_idx)
+        y_pred[local_node_idx[n_id[:batch_size]]] = out.argmax(dim=-1, keepdim=True).cpu()
+
+    for batch_size, n_id, adjs in valid_loader:
+        n_id = n_id.to(device)
+        adjs = [adj.to(device) for adj in adjs]
+        out = brgcn(n_id, x_dict, adjs, edge_type, node_type, local_node_idx)
+        y_pred[local_node_idx[n_id[:batch_size]]] = out.argmax(dim=-1, keepdim=True).cpu()
+
+    for batch_size, n_id, adjs in test_loader:
+        n_id = n_id.to(device)
+        adjs = [adj.to(device) for adj in adjs]
+        out = brgcn(n_id, x_dict, adjs, edge_type, node_type, local_node_idx)
+        y_pred[local_node_idx[n_id[:batch_size]]] = out.argmax(dim=-1, keepdim=True).cpu()
+
+    y_true = data.y_dict['paper']
+    train_acc = evaluator.eval({
+        'y_true': y_true[paper_train_idx],
+        'y_pred': y_pred[paper_train_idx],
+    })['acc']
+    valid_acc = evaluator.eval({
+        'y_true': y_true[paper_valid_idx],
+        'y_pred': y_pred[paper_valid_idx],
+    })['acc']
+    test_acc = evaluator.eval({
+        'y_true': y_true[paper_test_idx],
+        'y_pred': y_pred[paper_test_idx],
+    })['acc']
+
+    return train_acc, valid_acc, test_acc
+
+@torch.no_grad()
 def test_fullbatch():
     brgcn.eval()
 
@@ -137,6 +208,8 @@ def test_fullbatch():
 
     return train_acc, valid_acc, test_acc
 
+test_group()
+test_sample()
 
 for run in range(args.runs):
     optimizer = torch.optim.Adam(brgcn.parameters(), lr=args.lr)
@@ -144,8 +217,14 @@ for run in range(args.runs):
     for epoch in range(1, args.epochs+1):
         train_loss = train(epoch)
         print(f"Run {run}, Training epoch {epoch},  loss: {train_loss: .4f}")
-        train_acc, valid_acc, test_acc = test_fullbatch()
-        print(f"Testing performance, "
+        # train_acc, valid_acc, test_acc = test_fullbatch()
+        train_acc, valid_acc, test_acc = test_sample()
+        print(f"Testing performance sampling, "
               f"train: {100*train_acc: .2f}%,"
               f"valid: {100*valid_acc: .2f}%,"
               f"test: {100*test_acc: .2f}%")
+        train_acc2, valid_acc2, test_acc2 = test_group()
+        print(f"Testing performance group, "
+              f"train: {100*train_acc2: .2f}%,"
+              f"valid: {100*valid_acc2: .2f}%,"
+              f"test: {100*test_acc2: .2f}%")
