@@ -276,8 +276,7 @@ class RGCN(torch.nn.Module):
                 x = F.dropout(x, p=self.dropout, training=self.training)
         return x
 
-    def group_inference(self, x_dict, edge_index_dict, local2global, key2int):
-        device = list(x_dict.values())[0].device
+    def group_inference(self, x_dict, edge_index_dict, key2int):
         x_dict = copy(x_dict)
         for k, emb in self.emb_dict.items():
             x_dict[int(k)] = emb
@@ -285,19 +284,17 @@ class RGCN(torch.nn.Module):
             out_dict = dict()
             for n, x_target in x_dict.items():
                 edge_index_n = []
-                neighbor_nodes = []
                 edge_type_n = []
                 x = []
                 for k, e_i in edge_index_dict.items():
                     if key2int[k[-1]] == n:
                         edge_index_n.append(e_i)
-                        neighbor_nodes.append(local2global[k[0]])
                         edge_type_n.append(e_i.new_full((e_i.size(1),), key2int[k]))
                         x.append(x_dict[key2int[k[0]]])
                 edge_index_n = torch.cat(edge_index_n, dim=1)
-                node_type_n = edge_index_n.new_full((x_target.size(0),), n)
                 edge_type_n = torch.cat(edge_type_n, dim=0)
                 x = torch.cat([x_target]+x, dim=0)
+                node_type_n = edge_index_n.new_full((x_target.size(0),), n)
                 x = conv((x, x_target), edge_index_n, edge_type_n, node_type_n)
                 if i != self.num_layers-1:
                     x = F.relu(x)
@@ -320,7 +317,7 @@ y_global[local2global['paper']] = data.y_dict['paper']
 
 # Move everything to the GPU.
 x_dict = {k: v.to(device) for k, v in x_dict.items()}
-local2global = {k: v.to(device) for k, v in local2global.items()}
+edge_index_dict = {k: v.to(device) for k, v in edge_index_dict.items()}
 edge_type = edge_type.to(device)
 node_type = node_type.to(device)
 local_node_idx = local_node_idx.to(device)
