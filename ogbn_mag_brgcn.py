@@ -171,16 +171,16 @@ def test_sample():
 
     y_true = data.y_dict['paper']
     train_acc = evaluator.eval({
-        'y_true': y_true[paper_train_idx],
-        'y_pred': y_pred[paper_train_idx],
+        'y_true': y_true[idx_split['train']['paper']],
+        'y_pred': y_pred[idx_split['train']['paper']],
     })['acc']
     valid_acc = evaluator.eval({
-        'y_true': y_true[paper_valid_idx],
-        'y_pred': y_pred[paper_valid_idx],
+        'y_true': y_true[idx_split['valid']['paper']],
+        'y_pred': y_pred[idx_split['valid']['paper']],
     })['acc']
     test_acc = evaluator.eval({
-        'y_true': y_true[paper_test_idx],
-        'y_pred': y_pred[paper_test_idx],
+        'y_true': y_true[idx_split['test']['paper']],
+        'y_pred': y_pred[idx_split['test']['paper']],
     })['acc']
 
     return train_acc, valid_acc, test_acc
@@ -208,7 +208,7 @@ def test_fullbatch():
 
     return train_acc, valid_acc, test_acc
 
-test_group()
+# test_group()
 test_sample()
 
 for run in range(args.runs):
@@ -223,8 +223,8 @@ for run in range(args.runs):
               f"train: {100*train_acc: .2f}%,"
               f"valid: {100*valid_acc: .2f}%,"
               f"test: {100*test_acc: .2f}%")
-        train_acc2, valid_acc2, test_acc2 = test_group()
-        print(f"Testing performance group, "
-              f"train: {100*train_acc2: .2f}%,"
-              f"valid: {100*valid_acc2: .2f}%,"
-              f"test: {100*test_acc2: .2f}%")
+        # train_acc2, valid_acc2, test_acc2 = test_group()
+        # print(f"Testing performance group, "
+        #       f"train: {100*train_acc2: .2f}%,"
+        #       f"valid: {100*valid_acc2: .2f}%,"
+        #       f"test: {100*test_acc2: .2f}%")
