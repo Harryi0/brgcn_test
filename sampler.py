@@ -295,11 +295,11 @@ class RGCN(torch.nn.Module):
                 edge_type_n = torch.cat(edge_type_n, dim=0)
                 x = torch.cat([x_target]+x, dim=0)
                 node_type_n = edge_index_n.new_full((x_target.size(0),), n)
-                x = conv((x, x_target), edge_index_n, edge_type_n, node_type_n)
-                if i != self.num_layers-1:
-                    x = F.relu(x)
-                    x = F.dropout(x, p=self.dropout, training=self.training)
-                out_dict[n] = x
+                out_dict[n] = conv((x, x_target), edge_index_n, edge_type_n, node_type_n)
+
+            if i != self.num_layers - 1:
+                for j in range(self.num_node_types):
+                    F.relu_(out_dict[j])
             x_dict = out_dict
         return x_dict
 
@@ -380,7 +380,7 @@ def test():
 @torch.no_grad()
 def test_group():
     model.eval()
-    out = model.group_inference(x_dict, edge_index_dict, local2global, key2int)
+    out = model.group_inference(x_dict, edge_index_dict, key2int)
     out = out[key2int['paper']]
 
     y_pred = out.argmax(dim=-1, keepdim=True).cpu()
@@ -466,8 +466,8 @@ def test_sample():
 
 # test()  # Test if inference on GPU succeeds.
 # test_sample()
-# test_conv()
-test_group()
+test_conv()
+# test_group()
 for run in range(args.runs):
     model.reset_parameters()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
