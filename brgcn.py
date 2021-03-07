@@ -5,9 +5,9 @@ import torch.nn.functional as F
 from torch.nn import Parameter, Linear, ModuleList, ParameterDict, init
 from torch_geometric.nn import MessagePassing
 from torch_geometric.utils import softmax
-from torch_geometric.datasets import Entities
+from brgcn_example import BRGCN_O
 
-from torch_geometric.nn.inits import glorot
+from torch_geometric.nn.inits import glorot, ones
 
 class BRGCNConv(MessagePassing):
     def __init__(self, in_channels, out_channels, neg_slope, num_relations, heads=1, dropout=0):
@@ -20,24 +20,30 @@ class BRGCNConv(MessagePassing):
         self.heads = heads
         self.dropout = dropout
 
-        self.node_linear = Linear(self.in_channels, self.out_channels, bias=False)
+        self.linear_j = Linear(in_channels, heads*out_channels, bias=False)
+        self.linear_i = Linear(in_channels, heads*out_channels, bias=False)
         self.node_att = Parameter(torch.Tensor(self.num_relations, self.out_channels*2))
         self.W_q = Parameter(torch.Tensor(self.num_relations, self.out_channels, self.out_channels))
         self.W_k = Parameter(torch.Tensor(self.num_relations, self.out_channels, self.out_channels))
         self.W_v = Parameter(torch.Tensor(self.num_relations, self.out_channels, self.out_channels))
 
-        self.W_self = Parameter(torch.Tensor(self.out_channels, self.out_channels))
+        self.W_self = Parameter(torch.Tensor(self.in_channels, self.out_channels))
+        self.W_self_node = Parameter(torch.Tensor(self.in_channels, self.out_channels))
+        self.W_relation = Parameter(torch.Tensor(self.num_relations, 1))
 
         self.reset_parameters()
 
 
     def reset_parameters(self):
-        self.node_linear.reset_parameters()
+        self.linear_j.reset_parameters()
+        self.linear_i.reset_parameters()
         glorot(self.node_att)
         glorot(self.W_q)
         glorot(self.W_k)
         glorot(self.W_v)
         glorot(self.W_self)
+        glorot(self.W_self_node)
+        glorot(self.W_relation)
 
     def forward(self, x, edge_index, edge_type, node_type):
         '''
@@ -58,8 +64,8 @@ class BRGCNConv(MessagePassing):
         final_embeddings = x_target.new_zeros(x_target.size(0), self.out_channels)
 
         # TODO: why need to pass this linear layer
-        h_j = self.node_linear(x_neighbor)
-        h_i = self.node_linear(x_target)
+        h_j = self.linear_j(x_neighbor)
+        h_i = self.linear_i(x_target)
 
         x_h = (h_j, h_i)
 
@@ -74,8 +80,8 @@ class BRGCNConv(MessagePassing):
             relation_edge_mask = edge_type == r
             if relation_edge_mask.sum()==0:
                 continue
-            # z_r_i = self.compute_relation_embed(x=x_h, edge_index=edge_index[:, relation_mask], relation=r)
-            z_r_i = self.propagate(edge_index[:, relation_edge_mask], x=x_h, relation=r)
+            # Compute relation specific node embedding (Node Level attention)
+            z_r_i = self.propagate(edge_index[:, relation_edge_mask], x=x_h, relation=r) + x_target.matmul(self.W_self_node)
         ### construct query key value matrices
             q_i[r] = torch.matmul(z_r_i, self.W_q[r, :, :])
             k_i[r] = torch.matmul(z_r_i, self.W_k[r, :, :])
@@ -83,15 +89,23 @@ class BRGCNConv(MessagePassing):
 
         # output = self.aggregate_relation_attention(q_i, k_i, v_i, h_i, edge_index)
         for r in range(self.num_relations):
-            psi_r = (q_i[r,:,:].unsqueeze(0) * k_i).sum(-1).sum(0)
-            delta_r = (psi_r.view(1, -1, 1) * v_i).sum(0) + h_i.matmul(self.W_self)
-            delta_r = F.softmax(delta_r, dim=1)
-            final_embeddings += delta_r
+            psi_r = (q_i[r,:,:].unsqueeze(0) * k_i).sum(-1)
+            psi_r = F.softmax(psi_r, dim=0)
+            delta_r = (psi_r.unsqueeze(2) * v_i).sum(0)
+            mask = (delta_r.sum(1) != 0).view(-1, 1)
+            embed_r = delta_r + x_target.matmul(self.W_self)*mask
+            final_embeddings += embed_r * self.W_relation[r]
+            # delta_r = (psi_r.unsqueeze(2) * v_i + x_i.matmul(self.W_self)).sum(0)
+            # mask = (delta_r.sum(1)!=0).view(-1,1)
+
+            # embed_r = F.softmax(delta_r + torch.matmul(x_target, self.W_self), dim=1)*mask
+
 
         return final_embeddings
 
     def message(self, x_i, x_j, edge_index_i, relation):
         x_i = x_i.view(-1, self.out_channels)
+        x_j = x_j.view(-1, self.out_channels)
         alpha = (self.node_att[relation, :].view(1, -1) * torch.cat([x_i, x_j], dim=-1)).sum(dim=-1)
         alpha = F.leaky_relu(alpha, self.neg_slope)
         alpha = softmax(alpha, edge_index_i)
@@ -182,7 +196,7 @@ class BRGCN(torch.nn.Module):
             x = conv((x, x_target), edge_index, edge_type[e_id], node_type)
             if i != self.num_layers - 1:
                 x = F.relu(x)
-                x = F.dropout(x, p=self.dropout, training=self.training)
+                # x = F.dropout(x, p=self.dropout, training=self.training)
 
         return x.log_softmax(dim=-1)
 
