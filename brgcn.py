@@ -22,14 +22,14 @@ class BRGCNConv(MessagePassing):
 
         self.linear_j = Linear(in_channels, heads*out_channels, bias=False)
         self.linear_i = Linear(in_channels, heads*out_channels, bias=False)
-        self.node_att = Parameter(torch.Tensor(self.num_relations, self.out_channels*2))
-        self.W_q = Parameter(torch.Tensor(self.num_relations, self.out_channels, self.out_channels))
-        self.W_k = Parameter(torch.Tensor(self.num_relations, self.out_channels, self.out_channels))
-        self.W_v = Parameter(torch.Tensor(self.num_relations, self.out_channels, self.out_channels))
+        self.node_att = Parameter(torch.Tensor(num_relations, heads, out_channels*2))
+        self.W_q = Parameter(torch.Tensor(num_relations, heads*out_channels, out_channels))
+        self.W_k = Parameter(torch.Tensor(num_relations, heads*out_channels, out_channels))
+        self.W_v = Parameter(torch.Tensor(num_relations, heads*out_channels, out_channels))
 
-        self.W_self = Parameter(torch.Tensor(self.in_channels, self.out_channels))
-        self.W_self_node = Parameter(torch.Tensor(self.in_channels, self.out_channels))
-        self.W_relation = Parameter(torch.Tensor(self.num_relations, 1))
+        self.W_self = Parameter(torch.Tensor(in_channels, out_channels))
+        self.W_self_node = Parameter(torch.Tensor(in_channels, heads*out_channels))
+        self.W_relation = Parameter(torch.Tensor(num_relations, 1))
 
         self.reset_parameters()
 
@@ -45,7 +45,7 @@ class BRGCNConv(MessagePassing):
         glorot(self.W_self_node)
         glorot(self.W_relation)
 
-    def forward(self, x, edge_index, edge_type, node_type):
+    def forward(self, x, edge_index, edge_type):
         '''
         # single layer for the BR-GCN convolution, given the neighboring nodes and target nodes with their
         # embeddings and related edge type (relation type)
@@ -81,11 +81,13 @@ class BRGCNConv(MessagePassing):
             if relation_edge_mask.sum()==0:
                 continue
             # Compute relation specific node embedding (Node Level attention)
-            z_r_i = self.propagate(edge_index[:, relation_edge_mask], x=x_h, relation=r) + x_target.matmul(self.W_self_node)
+            # [num_nodes, heads, out_channels]
+            z_r_i = self.propagate(edge_index[:, relation_edge_mask], x=x_h, relation=r) \
+                    + x_target.matmul(self.W_self_node)
         ### construct query key value matrices
-            q_i[r] = torch.matmul(z_r_i, self.W_q[r, :, :])
-            k_i[r] = torch.matmul(z_r_i, self.W_k[r, :, :])
-            v_i[r] = torch.matmul(z_r_i, self.W_v[r, :, :])
+            q_i[r] = torch.matmul(z_r_i.view(-1, self.heads*self.out_channels), self.W_q[r, :, :])
+            k_i[r] = torch.matmul(z_r_i.view(-1, self.heads*self.out_channels), self.W_k[r, :, :])
+            v_i[r] = torch.matmul(z_r_i.view(-1, self.heads*self.out_channels), self.W_v[r, :, :])
 
         # output = self.aggregate_relation_attention(q_i, k_i, v_i, h_i, edge_index)
         for r in range(self.num_relations):
@@ -104,17 +106,15 @@ class BRGCNConv(MessagePassing):
         return final_embeddings
 
     def message(self, x_i, x_j, edge_index_i, relation):
-        x_i = x_i.view(-1, self.out_channels)
-        x_j = x_j.view(-1, self.out_channels)
-        alpha = (self.node_att[relation, :].view(1, -1) * torch.cat([x_i, x_j], dim=-1)).sum(dim=-1)
+        x_i = x_i.view(-1, self.heads, self.out_channels)
+        x_j = x_j.view(-1, self.heads, self.out_channels)
+        alpha = (self.node_att[relation].unsqueeze(0) * torch.cat([x_i, x_j], dim=-1)).sum(dim=-1)
         alpha = F.leaky_relu(alpha, self.neg_slope)
         alpha = softmax(alpha, edge_index_i)
         # TODO: Possible drop out step at here
         if self.training and self.dropout>0:
             alpha = F.dropout(alpha, p=self.dropout, training=True)
-        return alpha.view(-1,1) * x_j
-
-
+        return (alpha.unsqueeze(len(alpha.size())) * x_j).view(-1, self.heads*self.out_channels)
 
 class BRGCN(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, num_layers, dropout, neg_slope, heads,
@@ -193,7 +193,7 @@ class BRGCN(torch.nn.Module):
             x_target = x[:size[1]]  # Target node embeddings.
             node_type = node_type[:size[1]]  # Target node types.
             conv = self.convs[i]
-            x = conv((x, x_target), edge_index, edge_type[e_id], node_type)
+            x = conv((x, x_target), edge_index, edge_type[e_id])
             if i != self.num_layers - 1:
                 x = F.relu(x)
                 # x = F.dropout(x, p=self.dropout, training=self.training)
