@@ -21,6 +21,7 @@ comment.cut
 
 .DS_Store
 # Jupyter
+*.ipynb
 *.ipynb_checkpoints
 
 .idea/
@@ -29,6 +30,4 @@ comment.cut
 # omit dataset fornow
 COPY/
 dataset/
-
-# omit files
-*.ipynb
+data/
