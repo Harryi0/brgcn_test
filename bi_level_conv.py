@@ -189,25 +189,8 @@ class BiTransformerConv(MessagePassing):
                 if edge_type is None:
                     delta_r += x_r
                 else:
-                    delta_r += x_r #* mask
-            out += delta_r # * self.w_relation[r]
-
-        # propagate_type: (x: PairTensor, edge_attr: OptTensor)
-        # out = self.propagate(edge_index, x=x, edge_attr=edge_attr, size=None)
-        #
-        # if self.concat:
-        #     out = out.view(-1, self.heads * self.out_channels)
-        # else:
-        #     out = out.mean(dim=1)
-        #
-        # if self.root_weight:
-        #     x_r = self.lin_skip(x[1])
-        #     if self.lin_beta is not None:
-        #         beta = self.lin_beta(torch.cat([out, x_r, out - x_r], dim=-1))
-        #         beta = beta.sigmoid()
-        #         out = beta * x_r + (1 - beta) * out
-        #     else:
-        #         out += x_r
+                    delta_r += x_r * mask
+            out += delta_r * self.w_relation[r]
 
         return out
 
