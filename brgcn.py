@@ -61,7 +61,6 @@ class BRGCNConv(MessagePassing):
         :param node_type: node type of the target nodes
         :return:
         '''
-        # TODO: note the x_neighbor also contains the target nodes
         if isinstance(x,(tuple, list)):
             x_neighbor, x_target = x
         else:
@@ -69,7 +68,6 @@ class BRGCNConv(MessagePassing):
 
         final_embeddings = x_target.new_zeros(x_target.size(0), self.heads*self.out_channels)
 
-        # TODO: why need to pass this linear layer
         h_j = self.linear_j(x_neighbor)
         h_i = self.linear_i(x_target)
 
@@ -185,7 +183,6 @@ class BRGCN(torch.nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        #TODO: look into the embeddinng intialization
         for embedding in self.emb_dict.values():
             init.xavier_uniform_(embedding)
         for conv in self.convs:
