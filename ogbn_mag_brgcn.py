@@ -69,16 +69,16 @@ paper_valid_idx = paper_idx[idx_split['valid']['paper']]
 paper_test_idx = paper_idx[idx_split['test']['paper']]
 
 train_loader = NeighborSampler(edge_index, node_idx=paper_train_idx,
-                               sizes=[30, 25], batch_size=args.batch_size, shuffle=True) #num_workers=12)
+                               sizes=[30, 25], batch_size=args.batch_size, shuffle=True)
 
 infer_train_loader = NeighborSampler(edge_index, node_idx=paper_train_idx,
-                               sizes=[30, 25], batch_size=4096, shuffle=True) #num_workers=12)
+                               sizes=[30, 25], batch_size=4096, shuffle=True)
 
 valid_loader = NeighborSampler(edge_index, node_idx=paper_valid_idx,
-                               sizes=[30, 25], batch_size=args.infer_batch_size, shuffle=True) #num_workers=12)
+                               sizes=[30, 25], batch_size=args.infer_batch_size, shuffle=True)
 
 test_loader = NeighborSampler(edge_index, node_idx=paper_test_idx,
-                               sizes=[30, 25], batch_size=args.infer_batch_size, shuffle=True) #num_workers=12)
+                               sizes=[30, 25], batch_size=args.infer_batch_size, shuffle=True)
 
 device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
 
