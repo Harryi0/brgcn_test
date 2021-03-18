@@ -15,15 +15,15 @@ import os.path as osp
 import numpy as np
 import torch
 from torch.nn import Linear
-from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.metrics import roc_auc_score
 from tqdm import tqdm
 
 from torch_geometric.datasets import JODIEDataset
-from torch_geometric.nn import TGNMemory, TransformerConv
+from torch_geometric.nn import TGNMemory
 from torch_geometric.nn.models.tgn import (LastNeighborLoader, IdentityMessage,
                                            LastAggregator)
 
-from bi_level_conv import BiTransformerConv
+from tgn_bilevel.bi_level_conv import BiTransformerConv
 from logger import Logger
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

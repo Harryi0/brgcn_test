@@ -1,3 +1,2 @@
-BRGCN Test
+# Bi-Level attention model
 
-.
